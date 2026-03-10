@@ -2,7 +2,7 @@ import os
 import logging
 from django.core.management.base import BaseCommand
 from django.conf import settings
-from harvester.engine import HarvestEngine
+from ...engine import HarvestEngine
 
 logger = logging.getLogger(__name__)
 
