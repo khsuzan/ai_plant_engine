@@ -20,9 +20,10 @@ class HarvestEngine:
         # Using gpt-4o-mini is ~10x faster and 10x cheaper than gpt-4o for bulk structural tasks
         self.model = 'gpt-4o-mini' 
 
-    def harvest_plants(self, target_count: int = 5, existing_plants_list: List[str] = None) -> None:
+    def harvest_plants(self, target_count: int = 5, existing_plants_list: List[str] = None) -> List[Dict[str, Any]]:
         """
         Execute the Direct AI Harvester Pipeline for plants.
+        Returns a list of structured data for the generated plants so that insertion can be handled by the caller.
         """
         if existing_plants_list is None:
             existing_plants_list = []
@@ -33,18 +34,64 @@ class HarvestEngine:
         plant_names = self._generate_plant_names(target_count, existing_plants_list)
         logger.info(f"Generated {len(plant_names)} raw plant names to harvest.")
 
+        harvested_plants = []
         # Optionally, you can implement concurrent.futures right here to blast these out simultaneously
         for name in plant_names:
             try:
                 # Phase 2 & 3: Structure the single plant
                 structured_data = self._generate_single_plant(name)
                 
-                # Phase 4: Storage
-                self._phase_4_storage(structured_data)
+                # We skip direct storage here to let the caller handle insertion
+                # self._phase_4_storage(structured_data)
+                harvested_plants.append(structured_data)
+                
                 logger.info(f"Successfully processed: {structured_data.get('common_name', name)}")
             except Exception as e:
                 logger.error(f"Failed processing plant '{name}': {e}")
+                
+        return harvested_plants
 
+    def start_background_harvesting(
+        self, 
+        days: int = 7, 
+        plants_per_hour: int = 5, 
+        insert_callback=None, 
+        get_existing_plants_callback=None
+    ):
+        """
+        Runs a background task to harvest plants periodically (every hour) for a specified number of days.
+        """
+        import threading
+        import time
+        from datetime import datetime, timedelta
+
+        def worker():
+            end_time = datetime.now() + timedelta(days=days)
+            logger.info(f"Starting background harvesting for {days} days ({plants_per_hour} plants/hour). Ends at {end_time}")
+            
+            while datetime.now() < end_time:
+                try:
+                    existing_plants = []
+                    if get_existing_plants_callback:
+                        existing_plants = get_existing_plants_callback()
+                        
+                    harvested = self.harvest_plants(target_count=plants_per_hour, existing_plants_list=existing_plants)
+                    if harvested and insert_callback:
+                        insert_callback(harvested)
+                except Exception as e:
+                    logger.error(f"Error during background harvest task: {e}")
+                
+                # Check if we have surpassed the end time before sleeping another hour
+                if datetime.now() >= end_time:
+                    break
+                    
+                # Sleep for 1 hour (3600 seconds)
+                time.sleep(3600)
+            logger.info("Background harvesting completed.")
+            
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        return thread
     def _get_schema(self) -> str:
         return '''
         {
@@ -101,20 +148,46 @@ class HarvestEngine:
     def _fetch_wikipedia_image(self, plant_name: str) -> str:
         """
         Fetches the primary image URL for a given plant from the free Wikipedia API.
+        Includes a fallback to Wikipedia's open search if the exact term + redirect fails.
         """
+        def fetch_by_title(title: str) -> str:
+            try:
+                query = urllib.parse.quote(title)
+                url = f"https://en.wikipedia.org/w/api.php?action=query&prop=pageimages&titles={query}&redirects=1&pithumbsize=800&format=json"
+                req = urllib.request.Request(url, headers={'User-Agent': 'PlantHarvesterApp/1.0'})
+                with urllib.request.urlopen(req) as response:
+                    data = json.loads(response.read().decode())
+                    pages = data.get("query", {}).get("pages", {})
+                    for _, page_info in pages.items():
+                        if "thumbnail" in page_info:
+                            return page_info["thumbnail"]["source"]
+            except Exception as e:
+                logger.warning(f"Error fetching Wikipedia image for title '{title}': {e}")
+            return ""
+
+        # 1. Try exact match (with redirects)
+        image_url = fetch_by_title(plant_name)
+        if image_url:
+            return image_url
+
+        # 2. Fallback: Search for the closest Wikipedia article title
         try:
-            query = urllib.parse.quote(plant_name)
-            url = f"https://en.wikipedia.org/w/api.php?action=query&prop=pageimages&titles={query}&pithumbsize=800&format=json"
-            
-            req = urllib.request.Request(url, headers={'User-Agent': 'PlantHarvesterApp/1.0'})
+            search_query = urllib.parse.quote(plant_name)
+            search_url = f"https://en.wikipedia.org/w/api.php?action=opensearch&search={search_query}&limit=3&format=json"
+            req = urllib.request.Request(search_url, headers={'User-Agent': 'PlantHarvesterApp/1.0'})
             with urllib.request.urlopen(req) as response:
-                data = json.loads(response.read().decode())
-                pages = data.get("query", {}).get("pages", {})
-                for _, page_info in pages.items():
-                    if "thumbnail" in page_info:
-                        return page_info["thumbnail"]["source"]
+                search_data = json.loads(response.read().decode())
+                # OpenSearch format: [Query, [Title 1, Title 2...], [Snippet...], [Link...]]
+                if len(search_data) > 1 and len(search_data[1]) > 0:
+                    for possible_title in search_data[1]:
+                        # Try the first few search results, return first image found
+                        if possible_title.strip():
+                            fallback_image = fetch_by_title(possible_title)
+                            if fallback_image:
+                                return fallback_image
         except Exception as e:
-            logger.warning(f"Could not fetch Wikipedia image for {plant_name}: {e}")
+            logger.warning(f"Error during fallback search for '{plant_name}': {e}")
+
         return ""
 
     def _generate_single_plant(self, plant_name: str) -> Dict[str, Any]:
@@ -196,4 +269,7 @@ if __name__ == "__main__":
         mock_existing_db = ["Snake Plant", "ZZ Plant", "Monstera deliciosa", "Pothos"]
         print(f"\n--- Testing Pipeline Bulk Generator (Target: 2) ---")
         print(f"Mocking DB Database ignores for: {mock_existing_db}\n")
-        engine.harvest_plants(target_count=2, existing_plants_list=mock_existing_db)
+        harvested = engine.harvest_plants(target_count=2, existing_plants_list=mock_existing_db)
+        if harvested:
+            engine._phase_4_storage(harvested[0])
+            print(f"Final Output preview:\n{json.dumps(harvested, indent=2)}")
