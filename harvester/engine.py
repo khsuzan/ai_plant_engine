@@ -148,7 +148,7 @@ class HarvestEngine:
     def _fetch_wikipedia_image(self, plant_name: str) -> str:
         """
         Fetches the primary image URL for a given plant from the free Wikipedia API.
-        Includes a fallback to Wikipedia's open search if the exact term + redirect fails.
+        Includes multiple fallback strategies to ensure we get a plant image, not a map or unrelated image.
         """
         def fetch_by_title(title: str) -> str:
             try:
@@ -165,29 +165,212 @@ class HarvestEngine:
                 logger.warning(f"Error fetching Wikipedia image for title '{title}': {e}")
             return ""
 
+        def is_plant_article(title: str) -> bool:
+            """Check if the Wikipedia article is related to plants by checking categories."""
+            try:
+                query = urllib.parse.quote(title)
+                url = f"https://en.wikipedia.org/w/api.php?action=query&prop=categories&titles={query}&redirects=1&format=json"
+                req = urllib.request.Request(url, headers={'User-Agent': 'PlantHarvesterApp/1.0'})
+                with urllib.request.urlopen(req) as response:
+                    data = json.loads(response.read().decode())
+                    pages = data.get("query", {}).get("pages", {})
+                    for _, page_info in pages.items():
+                        categories = page_info.get("categories", [])
+                        category_names = [c.get("title", "").lower() for c in categories]
+                        # Check for plant-related categories
+                        plant_keywords = ["plant", "flower", "tree", "shrub", "herb", "botany", "genus", "species", "flora", "garden"]
+                        for keyword in plant_keywords:
+                            if any(keyword in cat for cat in category_names):
+                                return True
+                        # Exclude non-plant categories
+                        exclude_keywords = ["map", "location", "city", "county", "river", "lake", "mountain", "film", "book", "person", "film", "song"]
+                        for keyword in exclude_keywords:
+                            if any(keyword in cat for cat in category_names):
+                                return False
+                return True  # Default to True if we can't determine
+            except Exception:
+                return True  # Default to allowing if check fails
+
         # 1. Try exact match (with redirects)
         image_url = fetch_by_title(plant_name)
         if image_url:
+            logger.info(f"Found direct Wikipedia image for '{plant_name}'")
             return image_url
 
-        # 2. Fallback: Search for the closest Wikipedia article title
-        try:
-            search_query = urllib.parse.quote(plant_name)
-            search_url = f"https://en.wikipedia.org/w/api.php?action=opensearch&search={search_query}&limit=3&format=json"
-            req = urllib.request.Request(search_url, headers={'User-Agent': 'PlantHarvesterApp/1.0'})
-            with urllib.request.urlopen(req) as response:
-                search_data = json.loads(response.read().decode())
-                # OpenSearch format: [Query, [Title 1, Title 2...], [Snippet...], [Link...]]
-                if len(search_data) > 1 and len(search_data[1]) > 0:
-                    for possible_title in search_data[1]:
-                        # Try the first few search results, return first image found
-                        if possible_title.strip():
-                            fallback_image = fetch_by_title(possible_title)
-                            if fallback_image:
-                                return fallback_image
-        except Exception as e:
-            logger.warning(f"Error during fallback search for '{plant_name}': {e}")
+        # 2. Fallback: Search with plant-specific query to avoid maps/locations
+        plant_queries = [
+            f"{plant_name} plant",
+            f"{plant_name} flower",
+            f"{plant_name} (plant)",
+            plant_name
+        ]
+        
+        for query in plant_queries:
+            try:
+                search_query = urllib.parse.quote(query)
+                search_url = f"https://en.wikipedia.org/w/api.php?action=opensearch&search={search_query}&limit=5&format=json"
+                req = urllib.request.Request(search_url, headers={'User-Agent': 'PlantHarvesterApp/1.0'})
+                with urllib.request.urlopen(req) as response:
+                    search_data = json.loads(response.read().decode())
+                    # OpenSearch format: [Query, [Title 1, Title 2...], [Snippet...], [Link...]]
+                    if len(search_data) > 1 and len(search_data[1]) > 0:
+                        for possible_title in search_data[1]:
+                            if possible_title.strip() and is_plant_article(possible_title):
+                                fallback_image = fetch_by_title(possible_title)
+                                if fallback_image:
+                                    logger.info(f"Found plant image via search for '{plant_name}' using title '{possible_title}'")
+                                    return fallback_image
+            except Exception as e:
+                logger.warning(f"Error during fallback search for '{plant_name}' with query '{query}': {e}")
 
+        # 3. Try Wikimedia Commons direct search as final fallback
+        image_url = self._fetch_wikimedia_image(plant_name)
+        if image_url:
+            return image_url
+        
+        # 4. Try iNaturalist as another fallback
+        image_url = self._fetch_inaturalist_image(plant_name)
+        if image_url:
+            return image_url
+        
+        # 5. Try GBIF (Global Biodiversity Information Facility)
+        image_url = self._fetch_gbif_image(plant_name)
+        if image_url:
+            return image_url
+        
+        # 6. Try Pl@ntNet as last resort
+        image_url = self._fetch_plantnet_image(plant_name)
+        if image_url:
+            return image_url
+
+        logger.warning(f"No plant image found for '{plant_name}' after all fallbacks")
+        return ""
+
+    def _fetch_wikimedia_image(self, plant_name: str) -> str:
+        """
+        Fallback to Wikimedia Commons API to search for plant images.
+        Uses the MediaWiki Action API to search for files matching the plant name.
+        """
+        try:
+            # Search for images on Wikimedia Commons
+            search_query = urllib.parse.quote(f"{plant_name} plant")
+            url = f"https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch={search_query}&srnamespace=6&srlimit=5&format=json"
+            req = urllib.request.Request(url, headers={'User-Agent': 'PlantHarvesterApp/1.0'})
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
+                search_results = data.get("query", {}).get("search", [])
+                
+                for result in search_results:
+                    title = result.get("title", "")
+                    # Get image info for this file
+                    img_url = f"https://commons.wikimedia.org/w/api.php?action=query&titles={urllib.parse.quote(title)}&prop=pageimages&pithumbsize=800&format=json"
+                    img_req = urllib.request.Request(img_url, headers={'User-Agent': 'PlantHarvesterApp/1.0'})
+                    with urllib.request.urlopen(img_req) as img_response:
+                        img_data = json.loads(img_response.read().decode())
+                        pages = img_data.get("query", {}).get("pages", {})
+                        for _, page_info in pages.items():
+                            if "thumbnail" in page_info:
+                                # Verify it's likely a plant image by checking title for plant-related keywords
+                                title_lower = title.lower()
+                                exclude_words = ["map", "flag", "logo", "icon", "seal", "coat", "symbol"]
+                                if not any(word in title_lower for word in exclude_words):
+                                    logger.info(f"Found Wikimedia Commons image for '{plant_name}': {title}")
+                                    return page_info["thumbnail"]["source"]
+        except Exception as e:
+            logger.warning(f"Error fetching Wikimedia image for '{plant_name}': {e}")
+        return ""
+
+    def _fetch_inaturalist_image(self, plant_name: str) -> str:
+        """
+        Fallback to iNaturalist API to find plant photos.
+        iNaturalist is a nature observation platform with many plant photos.
+        """
+        try:
+            # Search for observations matching the plant name
+            search_query = urllib.parse.quote(plant_name)
+            url = f"https://api.inaturalist.org/v1/search?q={search_query}&taxon=47126&per_page=5"  # 47126 is the taxon ID for plants
+            req = urllib.request.Request(url, headers={'User-Agent': 'PlantHarvesterApp/1.0'})
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
+                results = data.get("results", [])
+                
+                for result in results:
+                    # Get the best image from observation
+                    if result.get("taxon"):
+                        taxon = result.get("taxon", {})
+                        if taxon.get("default_photo"):
+                            photo = taxon.get("default_photo", {})
+                            if photo.get("medium_url"):
+                                logger.info(f"Found iNaturalist image for '{plant_name}'")
+                                return photo.get("medium_url")
+        except Exception as e:
+            logger.warning(f"Error fetching iNaturalist image for '{plant_name}': {e}")
+        return ""
+
+    def _fetch_gbif_image(self, plant_name: str) -> str:
+        """
+        Fallback to GBIF (Global Biodiversity Information Facility) for plant images.
+        """
+        try:
+            # Search for species in GBIF
+            search_query = urllib.parse.quote(plant_name)
+            url = f"https://api.gbif.org/v1/species/match?name={search_query}"
+            req = urllib.request.Request(url, headers={'User-Agent': 'PlantHarvesterApp/1.0'})
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
+                
+                if data.get("usageKey"):
+                    # Try to get media/photos for this species
+                    media_url = f"https://api.gbif.org/v1/species/{data.get('usageKey')}/media"
+                    media_req = urllib.request.Request(media_url, headers={'User-Agent': 'PlantHarvesterApp/1.0'})
+                    with urllib.request.urlopen(media_req) as media_response:
+                        media_data = json.loads(media_response.read().decode())
+                        media_results = media_data.get("results", [])
+                        
+                        for media in media_results:
+                            # Prefer HTTP stillImage, fallback to any identifier
+                            if media.get("identifier"):
+                                # Check if it's an image type
+                                if media.get("type") == "StillImage" or media.get("format", "").startswith("image/"):
+                                    logger.info(f"Found GBIF image for '{plant_name}'")
+                                    return media.get("identifier")
+                        
+                        # If no image found, try any media identifier
+                        if media_results and media_results[0].get("identifier"):
+                            logger.info(f"Found GBIF media for '{plant_name}'")
+                            return media_results[0].get("identifier")
+        except Exception as e:
+            logger.warning(f"Error fetching GBIF image for '{plant_name}': {e}")
+        return ""
+
+    def _fetch_plantnet_image(self, plant_name: str) -> str:
+        """
+        Fallback to Pl@ntNet API for plant images.
+        Note: Pl@ntNet requires API key for full access, but we can try their public search.
+        """
+        try:
+            # Use Pl@ntNet's image search endpoint
+            search_query = urllib.parse.quote(plant_name)
+            url = f"https://my.plantnet.org/v2/related/search?query={search_query}&lang=en"
+            req = urllib.request.Request(url, headers={'User-Agent': 'PlantHarvesterApp/1.0'})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                data = json.loads(response.read().decode())
+                
+                # Pl@ntNet returns images in various formats, try to extract one
+                if data.get("images"):
+                    for img in data.get("images", [])[:3]:
+                        if img.get("url"):
+                            # Try to get a larger version
+                            url_bases = img.get("url", [])
+                            if isinstance(url_bases, list) and len(url_bases) > 1:
+                                # Usually last URLs are larger versions
+                                logger.info(f"Found PlantNet image for '{plant_name}'")
+                                return url_bases[-1]
+                            elif isinstance(url_bases, str):
+                                logger.info(f"Found PlantNet image for '{plant_name}'")
+                                return url_bases
+        except Exception as e:
+            logger.warning(f"Error fetching PlantNet image for '{plant_name}': {e}")
         return ""
 
     def _generate_single_plant(self, plant_name: str) -> Dict[str, Any]:
