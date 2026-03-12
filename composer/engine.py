@@ -31,9 +31,9 @@ class PlantComposer:
     
     def __init__(self, openai_api_key: str):
         self.client = OpenAI(api_key=openai_api_key)
-        # Using dall-e-3 for best quality blending
-        self.model = 'dall-e-3'
-        # dall-e-2 is faster and cheaper but lower quality
+        # Using dall-e-2 for image editing (dall-e-3 does not support image input)
+        self.model = 'dall-e-3'  # For text-to-image if needed
+        # dall-e-2 supports image editing via the image parameter
         self.fast_model = 'dall-e-2'
     
     def compose_plants(
@@ -210,12 +210,12 @@ class PlantComposer:
     ) -> Dict[str, Any]:
         """
         Send composite image to DALL-E for AI blending.
-        Uses DALL-E 3's image editing capability.
+        Uses DALL-E 2 for image editing capability (DALL-E 3 does not support image input).
         """
         try:
-            # DALL-E 3 image edit
+            # DALL-E 2 image edit (DALL-E 3 doesn't support image parameter)
             response = self.client.images.generate(
-                model=self.model,
+                model=self.fast_model,
                 prompt=prompt,
                 image=io.BytesIO(base64.b64decode(composite_image)),
                 size=size,
