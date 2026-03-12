@@ -22,7 +22,7 @@ class PlantComposer:
     def __init__(self, huggingface_api_key: str):
         self.api_key = huggingface_api_key
         # Using standard Stable Diffusion 1.5 - reliable and supported by the free API
-        self.api_url = "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-v1-5"
+        self.api_url = "https://router.huggingface.co/hf-inference/models/runwayml/stable-diffusion-v1-5"
     
     def compose_plants(
         self,
