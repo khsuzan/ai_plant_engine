@@ -170,12 +170,9 @@ class PlantComposer:
                 logger.warning(f"Failed to place plant {i+1}: {e}")
                 continue
         
-        # Convert to RGB for DALL-E (DALL-E doesn't support RGBA)
-        output_rgb = output.convert('RGB')
-        
-        # Save to bytes as base64
+        # Save to bytes as PNG
         buffer = io.BytesIO()
-        output_rgb.save(buffer, format='JPEG', quality=95)
+        output.save(buffer, format='PNG')
         buffer.seek(0)
         
         return base64.b64encode(buffer.read()).decode('utf-8')
@@ -213,13 +210,11 @@ class PlantComposer:
         Uses DALL-E 2 for image editing capability (DALL-E 3 does not support image input).
         """
         try:
-            # DALL-E 2 image edit (DALL-E 3 doesn't support image parameter)
-            response = self.client.images.generate(
+            # DALL-E 2 image variation
+            response = self.client.images.create_variation(
                 model=self.fast_model,
-                prompt=prompt,
                 image=io.BytesIO(base64.b64decode(composite_image)),
                 size=size,
-                quality=quality,
                 n=1
             )
             
