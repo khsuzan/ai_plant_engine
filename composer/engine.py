@@ -105,13 +105,22 @@ class PlantComposer:
                 header, b64data = image_source.split(',', 1)
                 img_data = base64.b64decode(b64data)
                 return Image.open(io.BytesIO(img_data)).convert('RGBA')
+            
             elif image_source.startswith('http://') or image_source.startswith('https://'):
-                # URL image
-                with urlopen(image_source) as response:
-                    return Image.open(response).convert('RGBA')
+                # URL image - FIX: Use requests with a User-Agent header
+                import requests
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                }
+                response = requests.get(image_source, headers=headers, timeout=10)
+                response.raise_for_status()  # This will crash if we get a 403, rather than failing silently
+                
+                return Image.open(io.BytesIO(response.content)).convert('RGBA')
+            
             else:
                 # File path
                 return Image.open(image_source).convert('RGBA')
+                
         except Exception as e:
             logger.error(f"Failed to load image from {image_source[:50]}...: {e}")
             raise ValueError(f"Could not load image: {e}")
