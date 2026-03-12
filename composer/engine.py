@@ -1,17 +1,12 @@
-import json
 import logging
 import os
 import io
 import base64
-from typing import List, Dict, Any, Tuple
-from urllib.request import urlopen
-from urllib.parse import urlparse
+import requests
+from typing import List, Dict, Any
 
 # Image processing
 from PIL import Image
-
-# OpenAI for DALL-E
-from openai import OpenAI
 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -21,49 +16,23 @@ logger = logging.getLogger(__name__)
 class PlantComposer:
     """
     AI-powered plant image composer that blends multiple plants into a garden image.
-    
-    Usage:
-        1. User places plants on garden image in frontend (sends coordinates)
-        2. Backend composites plants at specified positions
-        3. DALL-E blends everything for natural look
-        4. Returns final blended image
+    Uses Hugging Face's Free Inference API (Stable Diffusion) for true Image-to-Image blending.
     """
     
-    def __init__(self, openai_api_key: str):
-        self.client = OpenAI(api_key=openai_api_key)
-        # Using dall-e-2 for image editing (dall-e-3 does not support image input)
-        self.model = 'dall-e-3'  # For text-to-image if needed
-        # dall-e-2 supports image editing via the image parameter
-        self.fast_model = 'dall-e-2'
+    def __init__(self, huggingface_api_key: str):
+        self.api_key = huggingface_api_key
+        # Using standard Stable Diffusion 1.5 - reliable and supported by the free API
+        self.api_url = "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-v1-5"
     
     def compose_plants(
         self,
-        garden_image: str,  # URL or base64 or file path
+        garden_image: str,  
         plants: List[Dict[str, Any]],
-        # plants format: [{"image": "url/base64/path", "x": 0.5, "y": 0.5, "scale": 1.0}, ...]
-        # x, y are relative coordinates (0-1) from top-left
-        # scale is optional, defaults to 1.0
-        quality: str = 'standard',  # 'standard', 'high', 'low'
-        size: str = '1024x1024',    # '1024x1024', '1792x1024', '1024x1792'
         blend_prompt: str = None,
         return_combined_only: bool = False
     ) -> Dict[str, Any]:
         """
         Main method to compose plants into garden and blend them.
-        
-        Args:
-            garden_image: URL, base64, or file path of the garden/base image
-            plants: List of plant dicts with image and coordinates
-            quality: 'standard', 'high', or 'low' (affects cost)
-            size: Output image size
-            blend_prompt: Custom prompt for DALL-E blending (optional)
-            return_combined_only: If True, returns just the composited image before AI blending
-            
-        Returns:
-            Dict with:
-                - 'composite_image': base64 of the initial composite
-                - 'blended_image': base64 of the final AI-blended image
-                - 'revised_prompt': The prompt DALL-E used
         """
         logger.info(f"Starting plant composition with {len(plants)} plants")
         
@@ -82,13 +51,11 @@ class PlantComposer:
         if blend_prompt is None:
             blend_prompt = self._generate_blend_prompt(plants)
         
-        # Step 3: Send to DALL-E for natural blending (ONE API CALL)
-        logger.info("Sending to DALL-E for AI blending...")
-        blended_result = self._blend_with_dalle(
+        # Step 3: Send to Hugging Face for natural blending
+        logger.info("Sending to Hugging Face for AI blending. (This may take 20s if the free model is waking up...)")
+        blended_result = self._blend_with_huggingface(
             composite_image=composite_base64,
-            prompt=blend_prompt,
-            quality=quality,
-            size=size
+            prompt=blend_prompt
         )
         
         return {
@@ -98,7 +65,7 @@ class PlantComposer:
         }
     
     def _load_image(self, image_source: str) -> Image.Image:
-        """Load an image from URL, base64, or file path."""
+        """Load an image from URL, base64, or file path. Bypasses 403 Forbidden errors."""
         try:
             if image_source.startswith('data:image'):
                 # Base64 image
@@ -107,14 +74,12 @@ class PlantComposer:
                 return Image.open(io.BytesIO(img_data)).convert('RGBA')
             
             elif image_source.startswith('http://') or image_source.startswith('https://'):
-                # URL image - FIX: Use requests with a User-Agent header
-                import requests
+                # URL image - Using requests with a User-Agent to prevent Wikipedia 403 blocks
                 headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
                 }
                 response = requests.get(image_source, headers=headers, timeout=10)
-                response.raise_for_status()  # This will crash if we get a 403, rather than failing silently
-                
+                response.raise_for_status() 
                 return Image.open(io.BytesIO(response.content)).convert('RGBA')
             
             else:
@@ -134,141 +99,111 @@ class PlantComposer:
         Composite plants onto garden image at specified positions.
         Returns base64 of the composite image.
         """
-        # Load garden/base image
         garden = self._load_image(garden_image)
         original_width, original_height = garden.size
         
         logger.info(f"Garden image size: {original_width}x{original_height}")
         
-        # Create output image (RGBA for transparency support)
         output = Image.new('RGBA', (original_width, original_height), (0, 0, 0, 0))
         output.paste(garden, (0, 0))
         
-        # Place each plant at its position
         for i, plant in enumerate(plants):
             try:
                 plant_img = self._load_image(plant['image'])
                 
-                # Get position (relative 0-1 or absolute)
                 x = plant.get('x', 0.5)
                 y = plant.get('y', 0.5)
                 
-                # Convert relative to absolute if needed
                 if x <= 1 and y <= 1:
                     x = int(x * original_width)
                     y = int(y * original_height)
                 
-                # Get scale
                 scale = plant.get('scale', 1.0)
                 if scale != 1.0:
                     new_width = int(plant_img.width * scale)
                     new_height = int(plant_img.height * scale)
                     plant_img = plant_img.resize((new_width, new_height), Image.LANCZOS)
                 
-                # Calculate position (center the plant on the point)
                 plant_width, plant_height = plant_img.size
                 paste_x = x - plant_width // 2
                 paste_y = y - plant_height // 2
                 
-                # Paste plant (using alpha channel as mask)
                 output.paste(plant_img, (paste_x, paste_y), plant_img)
-                
                 logger.info(f"Planted plant {i+1} at ({paste_x}, {paste_y})")
                 
             except Exception as e:
                 logger.warning(f"Failed to place plant {i+1}: {e}")
                 continue
         
-        # Save to bytes as PNG
+        output_rgb = output.convert('RGB')
+        
+        # Save to bytes as JPEG for Hugging Face
         buffer = io.BytesIO()
-        output.save(buffer, format='PNG')
+        output_rgb.save(buffer, format='JPEG', quality=95)
         buffer.seek(0)
         
         return base64.b64encode(buffer.read()).decode('utf-8')
     
     def _generate_blend_prompt(self, plants: List[Dict[str, Any]]) -> str:
-        """Generate a prompt for DALL-E to blend plants naturally."""
+        """Generate a prompt for AI to blend plants naturally."""
         plant_descriptions = []
-        
         for plant in plants:
-            desc = plant.get('description', 'a plant')
+            desc = plant.get('description', 'a beautiful plant')
             if plant.get('name'):
                 desc = f"{plant['name']} - {desc}"
             plant_descriptions.append(desc)
         
-        plants_text = ", ".join(plant_descriptions) if plant_descriptions else "plants"
+        plants_text = ", ".join(plant_descriptions) if plant_descriptions else "plants and landscaping"
         
-        prompt = (
-            f"Photo of a garden with {plants_text} placed naturally. "
-            f"The plants are seamlessly blended into the garden scene with proper lighting, "
-            f"shadows, and perspective matching the original garden image. "
-            f"Realistic, photorealistic quality, natural colors, proper depth of field."
+        return (
+            f"A photorealistic backyard garden featuring {plants_text}. "
+            f"Perfect daytime lighting, natural shadows on the ground, "
+            f"seamless landscaping integration, highly detailed, 8k resolution, photorealistic."
         )
-        
-        return prompt
     
-    def _blend_with_dalle(
+    def _blend_with_huggingface(
         self,
         composite_image: str,
         prompt: str,
-        quality: str = 'standard',
-        size: str = '1024x1024'
     ) -> Dict[str, Any]:
         """
-        Send composite image to DALL-E for AI blending.
-        Uses DALL-E 2 for image editing capability (DALL-E 3 does not support image input).
+        Send composite image to Hugging Face Free Inference API.
         """
-        try:
-            # DALL-E 2 image variation
-            response = self.client.images.create_variation(
-                model=self.fast_model,
-                image=io.BytesIO(base64.b64decode(composite_image)),
-                size=size,
-                n=1
-            )
-            
-            result = response.data[0]
-            
-            # Get the revised prompt if DALL-E modified it
-            revised_prompt = getattr(result, 'revised_prompt', prompt)
-            
-            # Download and convert result to base64
-            image_url = result.url
-            with urlopen(image_url) as response:
-                image_data = response.read()
-            
-            image_base64 = base64.b64encode(image_data).decode('utf-8')
-            
-            logger.info(f"DALL-E blending complete, revised prompt: {revised_prompt[:100]}...")
-            
-            return {
-                'image_base64': image_base64,
-                'revised_prompt': revised_prompt,
-                'url': image_url
-            }
-            
-        except Exception as e:
-            logger.error(f"DALL-E blending failed: {e}")
-            raise
-    
-    def quick_blend(
-        self,
-        garden_image: str,
-        plant_image: str,
-        x: float = 0.5,
-        y: float = 0.5,
-        scale: float = 1.0
-    ) -> Dict[str, Any]:
-        """
-        Quick method for single plant - convenience wrapper.
-        """
-        plants = [{
-            'image': plant_image,
-            'x': x,
-            'y': y,
-            'scale': scale
-        }]
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
         
+        payload = {
+            "inputs": composite_image,  # HF accepts the base64 string directly
+            "parameters": {
+                "prompt": prompt,
+                "negative_prompt": "blurry, unnatural, morphed shapes, floating objects",
+                # 0.45 strength means: Keep 55% of the original image, change 45% (to blend lighting/shadows)
+                "strength": 0.45, 
+                "guidance_scale": 7.5
+            }
+        }
+        
+        response = requests.post(self.api_url, headers=headers, json=payload)
+        
+        if response.status_code != 200:
+            logger.error(f"Hugging Face API failed: {response.text}")
+            raise Exception(f"Non-200 response: {response.status_code} - {response.text}")
+            
+        # Hugging face returns the raw image bytes in the response content
+        image_data = response.content
+        final_image_base64 = base64.b64encode(image_data).decode('utf-8')
+        
+        logger.info("AI blending complete!")
+        
+        return {
+            'image_base64': final_image_base64,
+            'revised_prompt': prompt,
+        }
+
+    def quick_blend(self, garden_image: str, plant_image: str, x: float = 0.5, y: float = 0.5, scale: float = 1.0) -> Dict[str, Any]:
+        plants = [{'image': plant_image, 'x': x, 'y': y, 'scale': scale}]
         return self.compose_plants(garden_image, plants)
 
 
@@ -277,21 +212,13 @@ if __name__ == "__main__":
     from dotenv import load_dotenv
     load_dotenv()
     
-    api_key = os.environ.get("OPENAI_API_KEY")
+    # NOTE: Change this to look for HUGGINGFACE_API_KEY
+    api_key = os.environ.get("HUGGINGFACE_API_KEY")
     if not api_key:
-        print("ERROR: OPENAI_API_KEY not found in environment")
+        print("ERROR: HUGGINGFACE_API_KEY not found in environment")
         exit(1)
     
-    print("Initializing PlantComposer for testing...")
-    composer = PlantComposer(openai_api_key=api_key)
+    print("Initializing PlantComposer with Hugging Face...")
+    composer = PlantComposer(huggingface_api_key=api_key)
     
-    # Example usage with local files or URLs
-    # Replace with actual image paths/URLs
-    print("\nUsage:")
-    print("composer.compose_plants(")
-    print("    garden_image='path/to/garden.jpg',")
-    print("    plants=[")
-    print("        {'image': 'path/to/plant1.png', 'x': 0.3, 'y': 0.7, 'scale': 0.8},")
-    print("        {'image': 'path/to/plant2.png', 'x': 0.6, 'y': 0.5, 'scale': 1.0}")
-    print("    ]")
-    print(")")
+    print("\nComposer is ready to test!")
