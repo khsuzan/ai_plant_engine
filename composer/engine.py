@@ -44,30 +44,28 @@ class PlantComposer:
         plants_block = "\n".join(plant_descriptions)
 
         prompt = f"""
-You are an AI image composition agent.
+### ROLE
+You are a high-precision Digital Image Compositor.
 
-GOAL:
-Generate a realistic visualization of a garden with plants placed at specific positions.
+### TASK
+Perform a non-destructive insertion of specific plant assets onto a provided base garden image. 
 
-INPUT:
-- Base garden image: {garden_image_url}
+### CONSTRAINTS
+1.  **Zero-Change Policy:** The base garden image (lighting, geometry, background, and existing textures) must remain 100% identical. Do not re-render or "hallucinate" changes to the environment.
+2.  **Precise Placement:** Map the (x, y) coordinates exactly. 
+    * x: 0 (Left) to 1 (Right)
+    * y: 0 (Top/Horizon) to 1 (Bottom/Foreground)
+3.  **Perspective & Scaling:** Adjust the plant size based on the `scale` property, ensuring it obeys the depth of the garden (objects further "up" the y-axis should appear smaller to match the camera's FOV).
+4.  **Integration (The "Blend"):** * Cast contact shadows on the ground directly beneath the inserted plants.
+    * Match the plant’s highlights and shadows to the existing light source in the garden image.
+    * Ensure the "seams" where the plant meets the soil are naturally occluded.
 
-- Plants to insert:
-{plants_block}
+### INPUT DATA
+- **Base Image:** {garden_image_url}
+- **Plant Data:** {plants_block}
 
-STRICT RULES:
-1. DO NOT modify the base garden layout, lighting, perspective, or background.
-2. DO NOT modify plant appearance (color, shape, size ratio should remain realistic).
-3. Place each plant EXACTLY at given (x, y) coordinates:
-   - x: horizontal (0 = left, 1 = right)
-   - y: vertical (0 = top, 1 = bottom)
-4. Scale each plant according to the provided `scale` property, maintaining realistic perspective based on garden depth.
-5. Ensure plants blend naturally with ground (add shadow, slight lighting match).
-6. Do NOT reposition or redesign anything.
-7. Output should look like a real photograph.
-
-OUTPUT:
-- One final composited image only.
+### FINAL OUTPUT
+A single high-resolution photograph where the only delta between the input and output is the addition of the specified plants.
 """
         return prompt.strip()
 
