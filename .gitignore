@@ -1,3 +1,14 @@
+# Ignore everything in the root directory
+/*
+
+# Unignore specific directories and files
+!/.gitignore
+!/composer/
+!/harvester/
+
+# Ignore these specific files and directories everywhere
 __pycache__/
 *.pyc
+*.pyo
 .env
+.venv/
