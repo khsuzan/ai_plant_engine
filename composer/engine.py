@@ -102,7 +102,6 @@ OUTPUT:
                 model=self.engine_id,
                 prompt=prompt,
                 size=size,
-                response_format="b64_json"
             )
             
             blended_image = None
