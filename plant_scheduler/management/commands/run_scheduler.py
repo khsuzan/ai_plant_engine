@@ -1,7 +1,8 @@
 import json
 import os
 from django.core.management.base import BaseCommand
-from ..plant_scheduler.engine import PlantScheduler
+
+from ...engine import PlantScheduler
 
 class Command(BaseCommand):
     help = 'Run the AI plant scheduler with sample garden data'

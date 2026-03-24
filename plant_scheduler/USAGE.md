@@ -17,7 +17,7 @@ I've created a new Django app called `plant_scheduler` that generates a detailed
 
 **To use from Django views:**
 ```python
-from ai_plant_engine.plant_scheduler.engine import PlantScheduler
+from plant_scheduler.engine import PlantScheduler
 import os
 
 # Initialize the scheduler
