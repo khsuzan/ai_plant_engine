@@ -101,7 +101,6 @@ OUTPUT:
             response = self.client.images.generate(
                 model=self.engine_id,
                 prompt=prompt,
-                n=1,
                 size=size,
                 response_format="b64_json"
             )

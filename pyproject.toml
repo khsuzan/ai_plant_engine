@@ -1,0 +1,22 @@
+[project]
+name = "ai-plant-engine-harvester"
+version = "0.1.0"
+description = "A local testing harness for the Harvester Django app."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "django",
+    "djangorestframework>=3.16.1",
+    "huggingface-hub>=1.6.0",
+    "openai",
+    "pillow>=12.1.1",
+    "python-dotenv",
+    "requests>=2.32.5",
+    "uvicorn",
+]
+
+[tool.uv]
+managed = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["harvester", "scripts.py"]
