@@ -44,28 +44,32 @@ class PlantComposer:
         plants_block = "\n".join(plant_descriptions)
 
         prompt = f"""
-### ROLE
-You are a high-precision Digital Image Compositor.
+Edit the provided garden image {garden_image_url} by inserting the specified plants while keeping everything else in the image completely unchanged.
 
-### TASK
-Perform a non-destructive insertion of specific plant assets onto a provided base garden image. 
+CORE RULE
+Do NOT modify, regenerate, or alter the background, lighting, textures, camera angle, or existing objects.
+The output must be identical to the original image except for the added plants.
 
-### CONSTRAINTS
-1.  **Zero-Change Policy:** The base garden image (lighting, geometry, background, and existing textures) must remain 100% identical. Do not re-render or "hallucinate" changes to the environment.
-2.  **Precise Placement:** Map the (x, y) coordinates exactly. 
-    * x: 0 (Left) to 1 (Right)
-    * y: 0 (Top/Horizon) to 1 (Bottom/Foreground)
-3.  **Perspective & Scaling:** Adjust the plant size based on the `scale` property, ensuring it obeys the depth of the garden (objects further "up" the y-axis should appear smaller to match the camera's FOV).
-4.  **Integration (The "Blend"):** * Cast contact shadows on the ground directly beneath the inserted plants.
-    * Match the plant’s highlights and shadows to the existing light source in the garden image.
-    * Ensure the "seams" where the plant meets the soil are naturally occluded.
+PLANT INSERTION RULES
+Place each plant using normalized coordinates:
+x: 0 = left edge, 1 = right edge
+y: 0 = top/background, 1 = bottom/foreground
+Position plants exactly according to the given coordinates.
+Apply correct perspective scaling:
+Objects closer to y = 1 should appear larger
+Objects closer to y = 0 should appear smaller
 
-### INPUT DATA
-- **Base Image:** {garden_image_url}
-- **Plant Data:** {plants_block}
+LIGHTING & BLENDING
+Match the original scene lighting direction and intensity.
+Generate realistic contact shadows under each plant.
+Ensure plants are naturally grounded and partially blended into the soil/terrain.
+Match color tone and contrast to the environment.
 
-### FINAL OUTPUT
-A single high-resolution photograph where the only delta between the input and output is the addition of the specified plants.
+PLANT DATA
+{plants_block}
+
+OUTPUT REQUIREMENT
+Return a single high-resolution image where the only change from the original is the seamless insertion of the specified plants.
 """
         return prompt.strip()
 
