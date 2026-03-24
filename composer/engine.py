@@ -1,18 +1,20 @@
 import logging
 import os
+import io
+import base64
 from typing import List, Dict, Any
-
+from PIL import Image, ImageDraw, ImageFilter
 from openai import OpenAI
 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-
 class PlantComposer:
     """
-    AI-powered plant image composer for garden projects.
-    Uses OpenAI (gpt-image-1) for composition.
+    Surgical AI Plant Composer.
+    Guarantees background preservation by manually compositing and 
+    using AI Inpainting for lighting and shadow grounding.
     """
     
     def __init__(self, **kwargs):
@@ -22,108 +24,121 @@ class PlantComposer:
             os.getenv("OPENAI_API_KEY")
         )
         self.client = OpenAI(api_key=self.api_key)
-        self.engine_id = "gpt-image-1"
-    
-    def build_garden_composition_prompt(self, garden_image_url: str, plants: List[Dict[str, Any]]) -> str:
+        # Using the 2026 'gpt-image-1' for high-fidelity inpainting
+        self.model_id = "gpt-image-1" 
+
+    def _get_perspective_scale(self, y: float) -> float:
         """
-        Builds the text prompt instructing the AI to compose the garden image.
+        Calculates a multiplier based on vertical position.
+        y=0 (horizon) -> 0.4x scale
+        y=1 (foreground) -> 1.0x scale
         """
-        plant_descriptions = []
-        for i, plant in enumerate(plants):
-            img_src = plant.get('image_url') or plant.get('image', '')
-            x = plant.get('x', 0.5)
-            y = plant.get('y', 0.5)
-            scale = plant.get('scale', 1.0)
-            plant_descriptions.append(
-                f"Plant {i+1}:\n"
-                f"- image: {img_src}\n"
-                f"- position: x={x}, y={y} (relative, 0 to 1)\n"
-                f"- scale: {scale} (relative size)"
-            )
+        min_scale = 0.4
+        return min_scale + (y * (1.0 - min_scale))
 
-        plants_block = "\n".join(plant_descriptions)
+    def _prepare_mask(self, base_size: tuple, plants_metadata: List[Dict]) -> Image.Image:
+        """
+        Creates a mask where White (255) is the area for the AI to 'heal'
+        and Black (0) is the area to keep 100% original.
+        """
+        mask = Image.new("L", base_size, 0)
+        draw = ImageDraw.Draw(mask)
+        
+        for p in plants_metadata:
+            # We create a mask slightly larger than the plant to allow for shadow generation
+            cx, cy = p['x_px'], p['y_px']
+            radius = p['width'] * 0.7 
+            
+            # Draw a soft-edged circle at the base of the plant
+            bbox = [cx - radius, cy - radius, cx + radius, cy + radius]
+            draw.ellipse(bbox, fill=255)
+            
+        return mask.filter(ImageFilter.GaussianBlur(radius=15))
 
-        prompt = f"""
-Edit the provided garden image {garden_image_url} by inserting the specified plants while keeping everything else in the image completely unchanged.
-
-CORE RULE
-Do NOT modify, regenerate, or alter the background, lighting, textures, camera angle, or existing objects.
-The output must be identical to the original image except for the added plants.
-
-PLANT INSERTION RULES
-Place each plant using normalized coordinates:
-x: 0 = left edge, 1 = right edge
-y: 0 = top/background, 1 = bottom/foreground
-Position plants exactly according to the given coordinates.
-Apply correct perspective scaling:
-Objects closer to y = 1 should appear larger
-Objects closer to y = 0 should appear smaller
-
-LIGHTING & BLENDING
-Match the original scene lighting direction and intensity.
-Generate realistic contact shadows under each plant.
-Ensure plants are naturally grounded and partially blended into the soil/terrain.
-Match color tone and contrast to the environment.
-
-PLANT DATA
-{plants_block}
-
-OUTPUT REQUIREMENT
-Return a single high-resolution image where the only change from the original is the seamless insertion of the specified plants.
-"""
-        return prompt.strip()
+    def _to_bytes(self, img: Image.Image) -> io.BytesIO:
+        """Utility to convert PIL image to OpenAI-compatible byte stream."""
+        byte_stream = io.BytesIO()
+        img.save(byte_stream, format="PNG")
+        byte_stream.seek(0)
+        return byte_stream
 
     def compose_plants(
-        self,
-        garden_image: str,  
-        plants: List[Dict[str, Any]],
-        quality: str = 'standard',
-        size: str = '1024x1024',
-        blend_prompt: str = None,
-        return_combined_only: bool = False
+        self, 
+        garden_image_path: str, 
+        plants: List[Dict[str, Any]], 
+        size: str = "1024x1024"
     ) -> Dict[str, Any]:
         """
-        Main method to compose plants into the garden photo using OpenAI API.
+        Performs the full composition: Manual Paste -> Masking -> AI Refinement.
         """
-        logger.info(f"Starting plant composition with {len(plants)} plants using {self.engine_id}")
-        
-        prompt = self.build_garden_composition_prompt(garden_image, plants)
-        
-        if return_combined_only:
-            return {
-                'composite_image': None,
-                'blended_image': None,
-                'revised_prompt': prompt
-            }
-        
-        logger.info(f"Sending to OpenAI for blending with {self.engine_id}...")
+        logger.info(f"Processing {len(plants)} plants for surgical insertion.")
         
         try:
-            # Send the text prompt to OpenAI Images API
-            response = self.client.images.generate(
-                model=self.engine_id,
+            # 1. Load background
+            garden = Image.open(garden_image_path).convert("RGBA")
+            canvas = garden.copy()
+            plants_metadata = []
+
+            # 2. Manual Perspective Composition
+            for p in plants:
+                plant_img = Image.open(p['image_path']).convert("RGBA")
+                
+                # Apply scaling logic
+                p_scale = self._get_perspective_scale(p['y'])
+                total_scale = p.get('scale', 1.0) * p_scale
+                
+                new_size = (int(plant_img.width * total_scale), int(plant_img.height * total_scale))
+                plant_img = plant_img.resize(new_size, Image.Resampling.LANCZOS)
+                
+                # Calculate coordinates (anchoring the bottom-center of the plant)
+                x_pos = int(p['x'] * garden.width - (plant_img.width / 2))
+                y_pos = int(p['y'] * garden.height - plant_img.height)
+                
+                canvas.alpha_composite(plant_img, (x_pos, y_pos))
+                
+                # Store metadata for masking
+                plants_metadata.append({
+                    'x_px': x_pos + (plant_img.width // 2),
+                    'y_px': y_pos + plant_img.height, # Focus mask on the ground/base
+                    'width': plant_img.width
+                })
+
+            # 3. Generate Inpainting Mask
+            mask = self._prepare_mask(garden.size, plants_metadata)
+            
+            # 4. Request AI Refinement (The 'Weld')
+            # This fixes the lighting and adds the shadows onto the original soil.
+            prompt = (
+                "Photorealistic garden edit. Ground the inserted plants into the soil "
+                "with soft contact shadows. Match the ambient lighting and color "
+                "temperature exactly. Keep all unmasked areas identical."
+            )
+
+            logger.info("Sending surgical edit request to OpenAI...")
+            response = self.client.images.edit(
+                model=self.model_id,
+                image=self._to_bytes(canvas.convert("RGB")),
+                mask=self._to_bytes(mask),
                 prompt=prompt,
                 size=size,
             )
-            
-            blended_image = None
-            revised_prompt = prompt
-            
-            if response.data and len(response.data) > 0:
-                img_data = response.data[0]
-                blended_image = getattr(img_data, 'b64_json', None) or getattr(img_data, 'url', None)
-                if hasattr(img_data, 'revised_prompt') and img_data.revised_prompt:
-                    revised_prompt = img_data.revised_prompt
-            
-            return {
-                'composite_image': None,
-                'blended_image': blended_image,
-                'revised_prompt': revised_prompt
-            }
-        except Exception as e:
-            logger.error(f"OpenAI API failed: {e}")
-            raise
 
-    def quick_blend(self, garden_image: str, plant_image: str, x: float = 0.5, y: float = 0.5, scale: float = 1.0) -> Dict[str, Any]:
-        plants = [{'image': plant_image, 'x': x, 'y': y, 'scale': scale}]
-        return self.compose_plants(garden_image, plants)
+            return {
+                "success": True,
+                "final_image_url": response.data[0].url,
+                "preview_image": canvas # You can use this for instant UI feedback
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to compose: {str(e)}")
+            return {"success": False, "error": str(e)}
+
+# --- Example Usage ---
+# composer = PlantComposer()
+# result = composer.compose_plants(
+#     garden_image_path="my_backyard.png",
+#     plants=[
+#         {"image_path": "lavender.png", "x": 0.5, "y": 0.8, "scale": 1.2, "species": "Lavender"},
+#         {"image_path": "rose.png", "x": 0.2, "y": 0.5, "scale": 0.8, "species": "Red Rose"}
+#     ]
+# )

@@ -5,6 +5,7 @@
 !/.gitignore
 !/composer/
 !/harvester/
+!/plant_scheduler/
 
 # Ignore these specific files and directories everywhere
 __pycache__/
