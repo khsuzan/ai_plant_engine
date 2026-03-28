@@ -1,5 +1,5 @@
 from django.core.management.base import BaseCommand
-from ai_plant_engine.composer.engine import PlantComposer
+from ...engine import PlantComposer
 import os
 import json
 
@@ -72,11 +72,9 @@ class Command(BaseCommand):
 
         try:
             result = composer.compose_plants(
-                garden_image=options['garden'],
+                garden_image_path=options['garden'],
                 plants=plants,
-                quality=options['quality'],
                 size=options['size'],
-                blend_prompt=options.get('prompt')
             )
 
             if result.get('blended_image'):
